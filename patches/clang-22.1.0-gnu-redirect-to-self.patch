@@ -1,6 +1,6 @@
 --- a/clang/lib/Driver/ToolChains/Gnu.cpp
 +++ b/clang/lib/Driver/ToolChains/Gnu.cpp
-@@ -296,6 +296,19 @@
+@@ -296,6 +296,18 @@
    ArgStringList CmdArgs;
  
    // Silence warning for "clang -g foo.o -o foo"
@@ -8,7 +8,6 @@
 +  // single binary can serve as both clang driver and linker. See
 +  // src/entry/llvmbox.cpp for entry-point dispatch logic.
 +  std::string _LinkerPath = ToolChain.GetLinkerPath();
-+  const Driver &D = ToolChain.getDriver();
 +  if (_LinkerPath == "ld.lld" || _LinkerPath == "ld64.lld" ||
 +      _LinkerPath == "lld" || _LinkerPath == "lld-link" ||
 +      _LinkerPath == "wasm-ld") {
@@ -20,7 +19,7 @@
    Args.ClaimAllArgs(options::OPT_g_Group);
    // and "clang -emit-llvm foo.o -o foo"
    Args.ClaimAllArgs(options::OPT_emit_llvm);
-@@ -581,7 +594,7 @@
+@@ -581,7 +593,7 @@
  
    Args.addAllArgs(CmdArgs, {options::OPT_T, options::OPT_t});
  
