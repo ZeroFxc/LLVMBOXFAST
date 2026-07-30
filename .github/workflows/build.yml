@@ -157,12 +157,63 @@ jobs:
           find ${{ github.workspace }}/install/bin -type f -executable -exec strip --strip-all {} + 2>/dev/null || true
           find ${{ github.workspace }}/install/lib -name "*.a" -exec strip --strip-debug {} + 2>/dev/null || true
           du -sh ${{ github.workspace }}/install
+          echo "=== Built .a libs ==="
+          ls install/lib/*.a 2>/dev/null | wc -l
+
+      - name: Build single-binary llvmbox
+        run: |
+          INSTALL=${{ github.workspace }}/install
+
+          # ── 1. Compile the unified entry-point ──────────────────────────
+          #     llvmbox.cpp dispatches to clang_main or lld_main based on
+          #     argv[0] basename (just like busybox).
+          "$INSTALL/bin/clang++" -std=c++17 -DNDEBUG \
+            -I${{ github.workspace }}/include \
+            -I${{ github.workspace }}/llvm-source/clang/include \
+            -I${{ github.workspace }}/llvm-source/lld/include \
+            -I${{ github.workspace }}/llvm-source/llvm/include \
+            -I${{ github.workspace }}/build/include \
+            -I${{ github.workspace }}/build/tools/clang/include \
+            -I${{ github.workspace }}/build/tools/lld/include \
+            -c ${{ github.workspace }}/src/entry/llvmbox.cpp \
+            -o /tmp/llvmbox_main.o
+
+          # ── 2. Collect all static .a libraries ─────────────────────────
+          #     We need all of LLVM + clang + lld in one binary.
+          LIBS=$(find "$INSTALL/lib" -name '*.a' | sort | tr '\n' ' ')
+
+          # ── 3. Driver .o files for the clang tool entry ────────────────
+          #     We take all clang .o files EXCEPT clang-driver.cpp.o (which
+          #     has its own `main` from the llvm-driver template — we replace
+          #     it with our unified main).
+          DRV_O=$(find "${{ github.workspace }}/build/tools/clang/tools/driver/CMakeFiles/clang.dir" \
+                    -name '*.o' ! -name 'clang-driver.cpp.o' | sort | tr '\n' ' ')
+
+          # ── 4. Link into one executable ────────────────────────────────
+          "$INSTALL/bin/clang++" -static-libstdc++ -fuse-ld=lld \
+            /tmp/llvmbox_main.o \
+            $DRV_O \
+            $LIBS \
+            -lpthread -ldl -lz -lrt -latomic -lm \
+            -o "$INSTALL/bin/llvmbox"
+
+          # ── 5. Strip ───────────────────────────────────────────────────
+          strip --strip-all "$INSTALL/bin/llvmbox"
+          ls -lh "$INSTALL/bin/llvmbox"
+          file  "$INSTALL/bin/llvmbox"
+
+          # ── 6. Create symlinks so the unified binary also answers to ──
+          #     lld / ld.lld / ld64.lld / lld-link / wasm-ld
+          cd "$INSTALL/bin"
+          for name in lld ld.lld ld64.lld lld-link wasm-ld; do
+            ln -sf llvmbox "$name"
+          done
 
       - name: Smoke test
         run: |
           INSTALL=${{ github.workspace }}/install
-          echo "=== clang ===" && "$INSTALL/bin/clang" --version
-          echo "=== compile ===" && echo 'int main(){return 0;}' > /tmp/t.c && "$INSTALL/bin/clang" -o /tmp/t /tmp/t.c && /tmp/t && echo OK
+          echo "=== llvmbox --version ===" && "$INSTALL/bin/llvmbox" --version
+          echo "=== pack ./llvmbox ===" && echo 'int main(){return 0;}' > /tmp/t.c && "$INSTALL/bin/llvmbox" -o /tmp/t /tmp/t.c && /tmp/t && echo OK
 
       - name: Package
         run: |
