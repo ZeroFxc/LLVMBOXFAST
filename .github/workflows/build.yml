@@ -16,7 +16,6 @@ on:
 
 env:
   LLVM_VERSION: ${{ github.event.inputs.llvm_version || '22.1.0' }}
-  LLVM_SRC_TARBALL: llvmorg-${{ github.event.inputs.llvm_version || '22.1.0' }}.tar.gz
   # Limit parallelism to avoid OOM on GitHub Actions runners (2 CPU, 7GB RAM)
   BUILD_JOBS: 2
   CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -59,12 +58,25 @@ jobs:
       - name: Download LLVM source
         run: |
           echo "Downloading LLVM ${{ env.LLVM_VERSION }}..."
-          URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-${{ env.LLVM_VERSION }}/${{ env.LLVM_SRC_TARBALL }}"
+          # LLVM >= 16.0 uses "llvm-project-VERSION.src.tar.xz" naming
+          # LLVM < 16.0 uses "llvm-project-llvmorg-VERSION.tar.gz" naming
+          V="${{ env.LLVM_VERSION }}"
+          MAJOR=$(echo "$V" | cut -d. -f1)
+          if [ "$MAJOR" -ge 16 ]; then
+            SRC_FILE="llvm-project-${V}.src.tar.xz"
+            SRC_DIR="llvm-project-${V}.src"
+            TAR_OPT="xJ"
+          else
+            SRC_FILE="llvmorg-${V}.tar.gz"
+            SRC_DIR="llvm-project-llvmorg-${V}"
+            TAR_OPT="xz"
+          fi
+          URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-${V}/${SRC_FILE}"
           echo "URL: $URL"
-          curl -L --retry 3 --retry-delay 5 -o llvm.tar.gz "$URL"
-          ls -lh llvm.tar.gz
-          tar xf llvm.tar.gz
-          mv llvm-project-llvmorg-${{ env.LLVM_VERSION }} llvm-source
+          curl -L --retry 3 --retry-delay 5 -o llvm.src.tar "$URL"
+          ls -lh llvm.src.tar
+          tar ${TAR_OPT}f llvm.src.tar
+          mv "$SRC_DIR" llvm-source
           du -sh llvm-source
 
       - name: Configure ccache
