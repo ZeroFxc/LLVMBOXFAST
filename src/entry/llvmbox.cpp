@@ -53,7 +53,8 @@ int main(int argc, char **argv) {
     llvm::StringRef exeRef(exe);
 
     // Strip .exe suffix on Windows
-    if (exeRef.endswith_insensitive(".exe"))
+    std::string lower = exeRef.lower();
+    if (lower.size() >= 4 && lower.compare(lower.size() - 4, 4, ".exe") == 0)
         exeRef = exeRef.drop_back(4);
 
     bool lldMode = false;
