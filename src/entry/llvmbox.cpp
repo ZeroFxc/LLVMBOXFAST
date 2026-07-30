@@ -18,12 +18,21 @@
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/LLVMDriver.h"
 
+#include <algorithm>
 #include <cstring>
 #include <string>
 
 // Defined in clang/tools/driver/driver.cpp and lld/tools/lld/lld.cpp
-extern "C" int clang_main(int argc, char **argv, const llvm::ToolContext &);
-extern "C" int lld_main(int argc, char **argv, const llvm::ToolContext &);
+// These are C++ symbols — let the compiler mangle them naturally.
+int clang_main(int argc, char **argv, const llvm::ToolContext &);
+int lld_main(int argc, char **argv, const llvm::ToolContext &);
+
+static std::string to_lower(llvm::StringRef s) {
+    std::string out(s);
+    std::transform(out.begin(), out.end(), out.begin(),
+                   [](unsigned char c) { return std::tolower(c); });
+    return out;
+}
 
 static bool is_lld_arg(const char *a) {
     if (!a) return false;
@@ -52,8 +61,8 @@ int main(int argc, char **argv) {
     std::string exe = get_basename(argv[0]);
     llvm::StringRef exeRef(exe);
 
-    // Strip .exe suffix on Windows
-    std::string lower = exeRef.lower();
+    // Strip .exe suffix on Windows (case-insensitive)
+    std::string lower = to_lower(exeRef);
     if (lower.size() >= 4 && lower.compare(lower.size() - 4, 4, ".exe") == 0)
         exeRef = exeRef.drop_back(4);
 

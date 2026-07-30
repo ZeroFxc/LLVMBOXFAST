@@ -190,7 +190,11 @@ jobs:
                     -name '*.o' ! -name 'clang-driver.cpp.o' | sort | tr '\n' ' ')
 
           # ── 4. Link into one executable ────────────────────────────────
-          "$INSTALL/bin/clang++" -static-libstdc++ -fuse-ld=lld \
+          #     We link LLVM/clang/lld statically but leave libstdc++ and
+          #     system libs dynamic (same strategy as the upstream clang
+          #     toolchain driver binary). This keeps the linker simple and
+          #     avoids archive ABI mismatches.
+          "$INSTALL/bin/clang++" \
             /tmp/llvmbox_main.o \
             $DRV_O \
             $LIBS \
