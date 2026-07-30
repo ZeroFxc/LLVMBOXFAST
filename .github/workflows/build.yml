@@ -16,7 +16,6 @@ on:
 
 env:
   LLVM_VERSION: ${{ github.event.inputs.llvm_version || '22.1.0' }}
-  MUSL_VERSION: '1.2.5'
   BUILD_JOBS: 2
   CCACHE_DIR: ${{ github.workspace }}/.ccache
   CCACHE_MAXSIZE: "2G"
@@ -30,31 +29,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Free disk space
+      - name: Free disk
         run: |
           df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
-          sudo rm -rf /usr/share/swift /usr/local/lib/heroku
-          sudo apt-get remove -y --purge \
-            azure-cli dotnet-* firefox google-chrome-stable \
-            mysql-* php-* 2>/dev/null || true
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/share/swift
+          sudo apt-get remove -y --purge azure-cli dotnet-* firefox google-chrome-stable 2>/dev/null || true
           sudo apt-get autoremove -y 2>/dev/null || true
-          echo "--- After cleanup ---"
           df -h /
 
       - name: Install deps
         run: |
           sudo apt-get update -qq
-          # Install clang for bootstrapping our musl-clang build
           sudo apt-get install -y -qq --no-install-recommends \
             build-essential cmake ninja-build ccache curl xz-utils \
-            python3 ca-certificates clang-18 lld-18 \
-            zlib1g-dev libstdc++-13-dev
-          # Create clang symlinks
-          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
-          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-18 100
-          sudo update-alternatives --install /usr/bin/lld lld /usr/bin/lld-18 100
-          clang --version
+            python3 ca-certificates
+          ccache --version
 
       - name: Cache ccache
         uses: actions/cache@v4
@@ -62,7 +51,7 @@ jobs:
           path: ${{ env.CCACHE_DIR }}
           key: ccache-${{ runner.os }}-x86_64-llvm-${{ env.LLVM_VERSION }}-${{ hashFiles('.github/workflows/build.yml', 'patches/*.patch') }}
           restore-keys: |
-            ccache-${{ runner.os }}-x86_64-llvm-${{ env.LLVM_VERSION }}-
+            ccache-${{ runner.os }}-x86_64-llvm-${{ env.LLMVMBOX_VERSION }}-
             ccache-${{ runner.os }}-x86_64-llvm-
 
       - name: Setup ccache
@@ -73,40 +62,17 @@ jobs:
           ccache --set-config=sloppiness=pch_defines,time_macros,include_file_mtime
           ccache -z -p
 
-      - name: Build musl
-        run: |
-          echo "Cloning musl from GitHub mirror..."
-          git clone --depth 1 https://github.com/bminor/musl.git musl-src
-
-          cd musl-src  
-          echo "Configuring musl..."
-          CC=clang CXX=clang++ ./configure \
-            --prefix=${{ github.workspace }}/musl \
-            --target=x86_64-linux-musl \
-            --disable-shared
-          make -j${{ env.BUILD_JOBS }} 2>&1
-          make install 2>&1
-
-          MUSL="${{ github.workspace }}/musl"
-          echo "=== Contents ==="
-          ls -la "$MUSL/"
-
       - name: Download LLVM
         run: |
           V="${{ env.LLVM_VERSION }}"
-          MAJOR=$(echo "$V" | cut -d. -f1)
-          if [ "$MAJOR" -ge 16 ]; then
-            SRC_FILE="llvm-project-${V}.src.tar.xz"
-            SRC_DIR="llvm-project-${V}.src"
-          else
-            SRC_FILE="llvm-project-llvmorg-${V}.tar.gz"
-            SRC_DIR="llvm-project-llvmorg-${V}"
-          fi
+          SRC_FILE="llvm-project-${V}.src.tar.xz"
+          SRC_DIR="llvm-project-${V}.src"
           URL="https://github.com/llvm/llvm-project/releases/download/llvmorg-${V}/${SRC_FILE}"
           echo "Downloading: $URL"
-          curl -L --retry 3 --retry-delay 5 -o llvm.src.tar "$URL"
-          tar xf llvm.src.tar
+          curl -L --retry 3 --retry-delay 5 -o llvm.tar.xz "$URL"
+          tar xJf llvm.tar.xz
           mv "$SRC_DIR" llvm-source
+          echo "=== Source ready ==="
           du -sh llvm-source
 
       - name: Apply patches
@@ -114,37 +80,24 @@ jobs:
           cd llvm-source
           PATCH_DIR="${{ github.workspace }}/patches"
           V="${{ env.LLVM_VERSION }}"
-          for patch in "$PATCH_DIR"/*-"$V"*.patch; do
-            [ -f "$patch" ] || continue
-            echo "Applying: $(basename $patch)"
-            git apply --check "$patch" 2>&1 || { echo "FAILED: $patch"; exit 1; }
-            git apply "$patch" 2>&1
-            echo "OK"
+          for f in "$PATCH_DIR"/*-${V}-*.patch; do
+            [ -f "$f" ] || continue
+            echo "Applying: $(basename $f)"
+            patch -p1 < "$f" || { echo "FAILED"; exit 1; }
           done
-          echo "Patches applied."
+          echo "All patches applied."
 
       - name: Configure
         run: |
-          MUSL="${{ github.workspace }}/musl"
-          mkdir -p "${{ github.workspace }}/build"
-          cd "${{ github.workspace }}/build"
+          mkdir -p build && cd build
 
-          # Build clang with system clang-18, target musl
-          cmake -G Ninja ${{ github.workspace }}/llvm-source/llvm \
+          cmake -G Ninja ../llvm-source/llvm \
             -DCMAKE_BUILD_TYPE=MinSizeRel \
             -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/install \
-            \
-            -DCMAKE_C_COMPILER=clang \
-            -DCMAKE_CXX_COMPILER=clang++ \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             \
-            -DCMAKE_SYSROOT="$MUSL" \
-            -DCMAKE_C_FLAGS="--target=x86_64-linux-musl --sysroot=$MUSL -nostdinc -isystem $MUSL/include" \
-            -DCMAKE_CXX_FLAGS="--target=x86_64-linux-musl --sysroot=$MUSL -nostdinc -isystem $MUSL/include -nostdinc++ -isystem $MUSL/include/c++/v1" \
-            -DCMAKE_EXE_LINKER_FLAGS="--target=x86_64-linux-musl --sysroot=$MUSL -static -nostdlib++ $MUSL/lib/crt1.o $MUSL/lib/crti.o -L$MUSL/lib -lc++ -lc++abi -lunwind -lc" \
-            \
-            -DLLVM_TARGETS_TO_BUILD="X86;AArch64;ARM;WebAssembly" \
+            -DLLVM_TARGETS_TO_BUILD="X86;AArch64;ARM;RISCV;WebAssembly" \
             -DLLVM_ENABLE_PROJECTS="clang;lld" \
             -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind;compiler-rt" \
             \
@@ -168,26 +121,18 @@ jobs:
             -DCLANG_DEFAULT_UNWINDLIB=libunwind \
             -DCLANG_DEFAULT_LINKER=lld \
             -DCLANG_DEFAULT_OBJCOPY=llvm-objcopy \
-            -DCLANG_DEFAULT_TARGET_TRIPLE=x86_64-linux-musl \
             -DCLANG_VENDOR=llvmbox \
             -DCLANG_INCLUDE_DOCS=OFF \
             -DCLANG_ENABLE_ARCMT=OFF \
             -DCLANG_ENABLE_STATIC_ANALYZER=OFF \
-            -DCLANG_PLUGIN_SUPPORT=OFF \
             \
             -DLIBCXX_ENABLE_STATIC=ON \
             -DLIBCXX_ENABLE_SHARED=OFF \
             -DLIBCXX_CXX_ABI=libcxxabi \
             -DLIBCXX_USE_COMPILER_RT=ON \
-            -DLIBCXX_HAS_MUSL_LIBC=ON \
-            -DLIBCXX_INCLUDE_TESTS=OFF \
-            -DLIBCXX_INCLUDE_BENCHMARKS=OFF \
             -DLIBCXXABI_ENABLE_SHARED=OFF \
             -DLIBCXXABI_ENABLE_STATIC_UNWINDER=ON \
-            -DLIBCXXABI_INCLUDE_TESTS=OFF \
             -DLIBUNWIND_ENABLE_SHARED=OFF \
-            -DLIBUNWIND_ENABLE_STATIC=ON \
-            -DLIBUNWIND_INCLUDE_TESTS=OFF \
             \
             -DCOMPILER_RT_BUILD_CRT=ON \
             -DCOMPILER_RT_INCLUDE_TESTS=OFF \
@@ -195,56 +140,37 @@ jobs:
             -DCOMPILER_RT_BUILD_XRAY=OFF \
             -DCOMPILER_RT_BUILD_LIBFUZZER=OFF \
             -DCOMPILER_RT_BUILD_PROFILE=OFF \
-            -DCOMPILER_RT_BUILD_GWP_ASAN=OFF \
             -DCOMPILER_RT_USE_BUILTINS_LIBRARY=ON
 
       - name: Build
         run: |
-          cd ${{ github.workspace }}/build
-          echo "=== Build started at $(date) ==="
+          cd build
+          echo "Build start: $(date)"
           time ninja -j${{ env.BUILD_JOBS }} 2>&1 | tee /tmp/build.log
-          echo "=== Build finished at $(date) ==="
-          echo ""
-          echo "=== ccache stats ==="
+          echo "Build end: $(date)"
           ccache -s
-          echo "=== Disk ==="
-          df -h /
 
       - name: Install & Strip
         run: |
-          cd ${{ github.workspace }}/build
+          cd build
           ninja install/strip 2>/dev/null || ninja install
-
-          INSTALL=${{ github.workspace }}/install
-          # Strip
-          find "$INSTALL/bin" -type f -executable ! -name "*.cfg" -exec strip --strip-all {} + 2>/dev/null || true
-          find "$INSTALL/lib" -name "*.a" -exec strip --strip-debug {} + 2>/dev/null || true
-
-          echo "=== Install size ==="
-          du -sh "$INSTALL"
+          find ${{ github.workspace }}/install/bin -type f -executable -exec strip --strip-all {} + 2>/dev/null || true
+          find ${{ github.workspace }}/install/lib -name "*.a" -exec strip --strip-debug {} + 2>/dev/null || true
+          du -sh ${{ github.workspace }}/install
 
       - name: Smoke test
         run: |
           INSTALL=${{ github.workspace }}/install
-          echo "=== clang version ==="
-          "$INSTALL/bin/clang" --version 2>&1 || true
-          echo ""
-          echo "=== static executable test ==="
-          echo 'int main(){return 0;}' > /tmp/hello.c
-          "$INSTALL/bin/clang" -static -o /tmp/hello /tmp/hello.c 2>&1 && /tmp/hello && echo "OK" || echo "TEST FAILED"
-          echo ""
-          echo "=== check static ==="
-          file /tmp/hello 2>&1 || true
-          ldd /tmp/hello 2>&1 || true
+          echo "=== clang ===" && "$INSTALL/bin/clang" --version
+          echo "=== compile ===" && echo 'int main(){return 0;}' > /tmp/t.c && "$INSTALL/bin/clang" -o /tmp/t /tmp/t.c && /tmp/t && echo OK
 
       - name: Package
         run: |
-          cd ${{ github.workspace }}
           V="${{ env.LLVM_VERSION }}"
           PKG="llvmbox-${V}-x86_64-linux"
           mkdir -p "$PKG"
           cp -a install/* "$PKG/"
-          tar -cJf "${PKG}.tar.xz" "$PKG" --use-compress-program='xz -T0 -9'
+          tar --use-compress-program='xz -T0 -9' -cf "${PKG}.tar.xz" "$PKG"
           sha256sum "${PKG}.tar.xz" | tee "${PKG}.tar.xz.sha256"
           ls -lh "${PKG}.tar.xz"
 
@@ -252,9 +178,8 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: build-logs-${{ env.LLVM_VERSION }}
+          name: logs-${{ env.LLVM_VERSION }}
           path: /tmp/build.log
-          retention-days: 7
 
       - name: Upload artifact
         if: success()
@@ -264,7 +189,7 @@ jobs:
           path: llvmbox-*.tar.xz*
           retention-days: 30
 
-      - name: ccache stats
+      - name: ccache post stats
         if: always()
         run: ccache -s
 
@@ -280,7 +205,7 @@ jobs:
         with:
           path: artifacts
           pattern: llvmbox-*-linux
-      - run: find artifacts -type f | sort
+      - run: find artifacts -type f
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.ref_name }}
@@ -288,6 +213,5 @@ jobs:
           files: artifacts/**
           body: |
             llvmbox ${{ github.ref_name }} — LLVM ${{ env.LLVM_VERSION }} for Linux x86_64
-            Statically linked against musl libc. Zero runtime dependencies.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
