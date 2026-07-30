@@ -7,13 +7,19 @@ build/
 install/
 out/
 download/
+x86_64-linux-musl-native/
+musl-toolchain.tgz
 
 # ccache
 .ccache/
 
 # LLVM source (downloaded by CI)
 llvm-source/
-llvm.tar.gz
+llvm.src.tar
+
+# Reference repos (for local study only)
+rsms-llvmbox/
+nwdxlgzs-llvm-box/
 
 # IDE
 .vscode/
