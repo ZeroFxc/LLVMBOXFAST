@@ -192,13 +192,22 @@ jobs:
           # ── 4. Link into one executable ────────────────────────────────
           #     We link LLVM/clang/lld statically but leave libstdc++ and
           #     system libs dynamic (same strategy as the upstream clang
-          #     toolchain driver binary). This keeps the linker simple and
-          #     avoids archive ABI mismatches.
-          "$INSTALL/bin/clang++" \
+          #     toolchain driver binary). We use the system's clang++ from
+          #     /usr/lib/llvm-22 (or fallback to /usr/bin/clang++) so that
+          #     libstdc++ search paths are set up correctly; the just-built
+          #     clang++ from source does not carry these paths.
+          SYS_CLANGXX=$(command -v clang++ || true)
+          if [ -x "/usr/lib/llvm-22/bin/clang++" ]; then
+            SYS_CLANGXX="/usr/lib/llvm-22/bin/clang++"
+          elif [ -x "/usr/bin/clang++" ]; then
+            SYS_CLANGXX="/usr/bin/clang++"
+          fi
+          echo "Using SYS_CLANGXX=$SYS_CLANGXX"
+          "$SYS_CLANGXX" -stdlib=libstdc++ \
             /tmp/llvmbox_main.o \
             $DRV_O \
             $LIBS \
-            -lpthread -ldl -lz -lrt -latomic -lm \
+            -lpthread -ldl -lz -lrt -latomic -lstdc++ -lm \
             -o "$INSTALL/bin/llvmbox"
 
           # ── 5. Strip ───────────────────────────────────────────────────
