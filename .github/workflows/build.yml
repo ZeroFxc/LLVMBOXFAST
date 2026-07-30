@@ -75,30 +75,21 @@ jobs:
 
       - name: Build musl
         run: |
-          echo "Downloading musl source..."
-          curl -L --retry 3 -o musl.tar.gz "https://musl.libc.org/releases/musl-${{ env.MUSL_VERSION }}.tar.gz"
-          tar xf musl.tar.gz
-          mv musl-${{ env.MUSL_VERSION }} musl-src
+          echo "Cloning musl from GitHub mirror..."
+          git clone --depth 1 https://github.com/bminor/musl.git musl-src
 
-          echo "Building musl with system clang..."
-          cd musl-src
-          CC=clang CXX=clang++ CFLAGS="-O2" ./configure \
+          cd musl-src  
+          echo "Configuring musl..."
+          CC=clang CXX=clang++ ./configure \
             --prefix=${{ github.workspace }}/musl \
             --target=x86_64-linux-musl \
-            --disable-shared \
-            --enable-static
+            --disable-shared
           make -j${{ env.BUILD_JOBS }} 2>&1
-          make install
+          make install 2>&1
 
           MUSL="${{ github.workspace }}/musl"
           echo "=== Contents ==="
-          ls -la "$MUSL/" 
-          echo "=== Includes ==="
-          ls "$MUSL/include/" | head -10
-          echo "=== Libs ==="
-          ls "$MUSL/lib/" | head -15
-          echo "=== crt files ==="
-          ls "$MUSL/lib"/crt*.o "$MUSL/lib"/libc.a 2>/dev/null || true
+          ls -la "$MUSL/"
 
       - name: Download LLVM
         run: |
