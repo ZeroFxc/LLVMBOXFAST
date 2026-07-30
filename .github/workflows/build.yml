@@ -73,22 +73,30 @@ jobs:
           ccache --set-config=sloppiness=pch_defines,time_macros,include_file_mtime
           ccache -z -p
 
-      - name: Download musl
+      - name: Build musl
         run: |
-          echo "Downloading musl native toolchain..."
-          curl -L --retry 3 -o musl.tgz "https://musl.cc/x86_64-linux-musl-native.tgz"
-          ls -lh musl.tgz
-          tar xf musl.tgz
-          MUSL="${{ github.workspace }}/x86_64-linux-musl-native"
+          echo "Downloading musl source..."
+          curl -L --retry 3 -o musl.tar.gz "https://musl.libc.org/releases/musl-${{ env.MUSL_VERSION }}.tar.gz"
+          tar xf musl.tar.gz
+          mv musl-${{ env.MUSL_VERSION }} musl-src
+
+          echo "Building musl with system clang..."
+          cd musl-src
+          CC=clang CXX=clang++ CFLAGS="-O2" ./configure \
+            --prefix=${{ github.workspace }}/musl \
+            --target=x86_64-linux-musl \
+            --disable-shared \
+            --enable-static
+          make -j${{ env.BUILD_JOBS }} 2>&1
+          make install
+
+          MUSL="${{ github.workspace }}/musl"
           echo "=== Contents ==="
-          ls -la "$MUSL/" | head -10
+          ls -la "$MUSL/" 
           echo "=== Includes ==="
           ls "$MUSL/include/" | head -10
           echo "=== Libs ==="
           ls "$MUSL/lib/" | head -15
-          echo "=== libc.so ==="
-          file "$MUSL/lib/libc.so" 2>/dev/null || echo "(no libc.so)"
-          file "$MUSL/lib/ld-musl-x86_64.so.1" 2>/dev/null || echo "(no ld-musl)"
           echo "=== crt files ==="
           ls "$MUSL/lib"/crt*.o "$MUSL/lib"/libc.a 2>/dev/null || true
 
@@ -126,7 +134,7 @@ jobs:
 
       - name: Configure
         run: |
-          MUSL="${{ github.workspace }}/x86_64-linux-musl-native"
+          MUSL="${{ github.workspace }}/musl"
           mkdir -p "${{ github.workspace }}/build"
           cd "${{ github.workspace }}/build"
 
