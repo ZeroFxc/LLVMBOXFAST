@@ -35,8 +35,9 @@ jobs:
           df -h /
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
           sudo rm -rf /usr/share/swift /usr/local/lib/heroku
-          sudo apt-get remove -y --purge azure-cli dotnet-* ghc-* firefox \
-            google-chrome-stable mysql-* php-* 2>/dev/null || true
+          sudo apt-get remove -y --purge \
+            azure-cli dotnet-* firefox google-chrome-stable \
+            mysql-* php-* 2>/dev/null || true
           sudo apt-get autoremove -y 2>/dev/null || true
           echo "--- After cleanup ---"
           df -h /
@@ -44,10 +45,16 @@ jobs:
       - name: Install deps
         run: |
           sudo apt-get update -qq
+          # Install clang for bootstrapping our musl-clang build
           sudo apt-get install -y -qq --no-install-recommends \
             build-essential cmake ninja-build ccache curl xz-utils \
-            python3 ca-certificates
-          ccache --version
+            python3 ca-certificates clang-18 lld-18 \
+            zlib1g-dev libstdc++-13-dev
+          # Create clang symlinks
+          sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-18 100
+          sudo update-alternatives --install /usr/bin/clang++ clang++ /usr/bin/clang++-18 100
+          sudo update-alternatives --install /usr/bin/lld lld /usr/bin/lld-18 100
+          clang --version
 
       - name: Cache ccache
         uses: actions/cache@v4
@@ -66,26 +73,26 @@ jobs:
           ccache --set-config=sloppiness=pch_defines,time_macros,include_file_mtime
           ccache -z -p
 
-      - name: Download musl toolchain
+      - name: Download musl
         run: |
-          echo "Downloading musl ${{ env.MUSL_VERSION }}..."
-          MUSL_URL="https://musl.cc/x86_64-linux-musl-native.tgz"
-          curl -L --retry 3 -o musl-toolchain.tgz "$MUSL_URL"
-          ls -lh musl-toolchain.tgz
-          tar xf musl-toolchain.tgz
-          echo "=== musl toolchain contents ==="
-          find x86_64-linux-musl-native -maxdepth 2 -type d | head -20
-          echo ""
-          echo "=== musl version ==="
-          x86_64-linux-musl-native/bin/gcc --version 2>/dev/null || echo "(standalone - no wrapper)"
-          echo ""
-          echo "=== musl headers ==="
-          ls x86_64-linux-musl-native/include/ | head -10
-          echo ""
-          echo "=== musl libs ==="
-          ls x86_64-linux-musl-native/lib/ | head -10
+          echo "Downloading musl native toolchain..."
+          curl -L --retry 3 -o musl.tgz "https://musl.cc/x86_64-linux-musl-native.tgz"
+          ls -lh musl.tgz
+          tar xf musl.tgz
+          MUSL="${{ github.workspace }}/x86_64-linux-musl-native"
+          echo "=== Contents ==="
+          ls -la "$MUSL/" | head -10
+          echo "=== Includes ==="
+          ls "$MUSL/include/" | head -10
+          echo "=== Libs ==="
+          ls "$MUSL/lib/" | head -15
+          echo "=== libc.so ==="
+          file "$MUSL/lib/libc.so" 2>/dev/null || echo "(no libc.so)"
+          file "$MUSL/lib/ld-musl-x86_64.so.1" 2>/dev/null || echo "(no ld-musl)"
+          echo "=== crt files ==="
+          ls "$MUSL/lib"/crt*.o "$MUSL/lib"/libc.a 2>/dev/null || true
 
-      - name: Download LLVM source
+      - name: Download LLVM
         run: |
           V="${{ env.LLVM_VERSION }}"
           MAJOR=$(echo "$V" | cut -d. -f1)
@@ -108,49 +115,44 @@ jobs:
           cd llvm-source
           PATCH_DIR="${{ github.workspace }}/patches"
           V="${{ env.LLVM_VERSION }}"
-          # Apply patches matching this LLVM version
-          for patch in "$PATCH_DIR"/*-"$V"-*.patch; do
+          for patch in "$PATCH_DIR"/*-"$V"*.patch; do
             [ -f "$patch" ] || continue
             echo "Applying: $(basename $patch)"
-            patch -p1 < "$patch" || { echo "FAILED: $patch"; exit 1; }
+            git apply --check "$patch" 2>&1 || { echo "FAILED: $patch"; exit 1; }
+            git apply "$patch" 2>&1
+            echo "OK"
           done
-          echo "All patches applied."
+          echo "Patches applied."
 
       - name: Configure
         run: |
           MUSL="${{ github.workspace }}/x86_64-linux-musl-native"
-          echo "=== musl sysroot structure ==="
-          ls "$MUSL/" 
-          echo ""
-          
-          mkdir -p build && cd build
+          mkdir -p "${{ github.workspace }}/build"
+          cd "${{ github.workspace }}/build"
 
-          cmake -G Ninja ../llvm-source/llvm \
+          # Build clang with system clang-18, target musl
+          cmake -G Ninja ${{ github.workspace }}/llvm-source/llvm \
             -DCMAKE_BUILD_TYPE=MinSizeRel \
             -DCMAKE_INSTALL_PREFIX=${{ github.workspace }}/install \
             \
+            -DCMAKE_C_COMPILER=clang \
+            -DCMAKE_CXX_COMPILER=clang++ \
             -DCMAKE_C_COMPILER_LAUNCHER=ccache \
             -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
             \
-            -DCMAKE_C_COMPILER=clang \
-            -DCMAKE_CXX_COMPILER=clang++ \
-            -DCMAKE_ASM_COMPILER=clang \
-            \
             -DCMAKE_SYSROOT="$MUSL" \
-            -DCMAKE_C_FLAGS="--target=x86_64-linux-musl --sysroot=$MUSL" \
-            -DCMAKE_CXX_FLAGS="--target=x86_64-linux-musl --sysroot=$MUSL" \
-            -DCMAKE_EXE_LINKER_FLAGS="--target=x86_64-linux-musl --sysroot=$MUSL -static" \
+            -DCMAKE_C_FLAGS="--target=x86_64-linux-musl --sysroot=$MUSL -nostdinc -isystem $MUSL/include" \
+            -DCMAKE_CXX_FLAGS="--target=x86_64-linux-musl --sysroot=$MUSL -nostdinc -isystem $MUSL/include -nostdinc++ -isystem $MUSL/include/c++/v1" \
+            -DCMAKE_EXE_LINKER_FLAGS="--target=x86_64-linux-musl --sysroot=$MUSL -static -nostdlib++ $MUSL/lib/crt1.o $MUSL/lib/crti.o -L$MUSL/lib -lc++ -lc++abi -lunwind -lc" \
             \
-            -DLLVM_TARGETS_TO_BUILD="X86;AArch64;ARM;RISCV;WebAssembly" \
-            -DLLVM_ENABLE_PROJECTS="clang;lld;clang-tools-extra" \
-            -DLLVM_ENABLE_RUNTIMES="compiler-rt;libcxx;libcxxabi;libunwind" \
+            -DLLVM_TARGETS_TO_BUILD="X86;AArch64;ARM;WebAssembly" \
+            -DLLVM_ENABLE_PROJECTS="clang;lld" \
+            -DLLVM_ENABLE_RUNTIMES="libcxx;libcxxabi;libunwind;compiler-rt" \
             \
             -DLLVM_BUILD_LLVM_DYLIB=OFF \
             -DLLVM_ENABLE_PIC=OFF \
             -DLLVM_ENABLE_MODULES=OFF \
             -DLLVM_ENABLE_BINDINGS=OFF \
-            -DLLVM_ENABLE_LIBXML2=OFF \
-            -DLLVM_ENABLE_TERMINFO=OFF \
             -DLLVM_ENABLE_EH=OFF \
             -DLLVM_ENABLE_RTTI=OFF \
             -DLLVM_ENABLE_FFI=OFF \
@@ -159,7 +161,7 @@ jobs:
             -DLLVM_INCLUDE_TESTS=OFF \
             -DLLVM_INCLUDE_EXAMPLES=OFF \
             -DLLVM_INCLUDE_BENCHMARKS=OFF \
-            -LLDB_INCLUDE_DOCS=OFF \
+            -DLLVM_INCLUDE_DOCS=OFF \
             -DLLVM_INCLUDE_UTILS=ON \
             \
             -DCLANG_DEFAULT_CXX_STDLIB=libc++ \
@@ -181,11 +183,9 @@ jobs:
             -DLIBCXX_HAS_MUSL_LIBC=ON \
             -DLIBCXX_INCLUDE_TESTS=OFF \
             -DLIBCXX_INCLUDE_BENCHMARKS=OFF \
-            \
             -DLIBCXXABI_ENABLE_SHARED=OFF \
             -DLIBCXXABI_ENABLE_STATIC_UNWINDER=ON \
             -DLIBCXXABI_INCLUDE_TESTS=OFF \
-            \
             -DLIBUNWIND_ENABLE_SHARED=OFF \
             -DLIBUNWIND_ENABLE_STATIC=ON \
             -DLIBUNWIND_INCLUDE_TESTS=OFF \
@@ -197,28 +197,26 @@ jobs:
             -DCOMPILER_RT_BUILD_LIBFUZZER=OFF \
             -DCOMPILER_RT_BUILD_PROFILE=OFF \
             -DCOMPILER_RT_BUILD_GWP_ASAN=OFF \
-            -DCOMPILER_RT_USE_BUILTINS_LIBRARY=ON \
-            -DCOMPILER_RT_DEFAULT_TARGET_ONLY=ON
+            -DCOMPILER_RT_USE_BUILTINS_LIBRARY=ON
 
       - name: Build
         run: |
-          cd build
-          echo "=== Build starting at $(date) ==="
+          cd ${{ github.workspace }}/build
+          echo "=== Build started at $(date) ==="
           time ninja -j${{ env.BUILD_JOBS }} 2>&1 | tee /tmp/build.log
           echo "=== Build finished at $(date) ==="
           echo ""
           echo "=== ccache stats ==="
           ccache -s
-          echo ""
           echo "=== Disk ==="
           df -h /
 
       - name: Install & Strip
         run: |
-          cd build
-          ninja install/stripping 2>/dev/null || ninja install
+          cd ${{ github.workspace }}/build
+          ninja install/strip 2>/dev/null || ninja install
 
-          INSTALL="${{ github.workspace }}/install"
+          INSTALL=${{ github.workspace }}/install
           # Strip
           find "$INSTALL/bin" -type f -executable ! -name "*.cfg" -exec strip --strip-all {} + 2>/dev/null || true
           find "$INSTALL/lib" -name "*.a" -exec strip --strip-debug {} + 2>/dev/null || true
@@ -226,28 +224,18 @@ jobs:
           echo "=== Install size ==="
           du -sh "$INSTALL"
 
-          # Create bitutils symlinks
-          mkdir -p "$INSTALL/binutils-aliases"
-          for pair in "ar:llvm-ar" "as:llvm-mc" "nm:llvm-nm" "objcopy:llvm-objcopy" \
-                      "objdump:llvm-objdump" "ranlib:llvm-ranlib" "strip:llvm-objcopy" \
-                      "size:llvm-size" "strings:llvm-strings" "addr2line:llvm-symbolizer" \
-                      "readelf:llvm-readobj" "ld:lld"; do
-            alias="${pair%%:*}"
-            target="${pair##*:}"
-            ln -sf "../bin/$target" "$INSTALL/binutils-aliases/$alias" 2>/dev/null || true
-          done
-
       - name: Smoke test
         run: |
-          INSTALL="${{ github.workspace }}/install"
+          INSTALL=${{ github.workspace }}/install
           echo "=== clang version ==="
-          "$INSTALL/bin/clang" --version || true
+          "$INSTALL/bin/clang" --version 2>&1 || true
           echo ""
-          echo "=== ld.lld test ==="
+          echo "=== static executable test ==="
           echo 'int main(){return 0;}' > /tmp/hello.c
           "$INSTALL/bin/clang" -static -o /tmp/hello /tmp/hello.c 2>&1 && /tmp/hello && echo "OK" || echo "TEST FAILED"
           echo ""
-          echo "=== ldd check (should show 'not a dynamic executable') ==="
+          echo "=== check static ==="
+          file /tmp/hello 2>&1 || true
           ldd /tmp/hello 2>&1 || true
 
       - name: Package
@@ -257,13 +245,8 @@ jobs:
           PKG="llvmbox-${V}-x86_64-linux"
           mkdir -p "$PKG"
           cp -a install/* "$PKG/"
-
-          # Use parallel xz compression
           tar -cJf "${PKG}.tar.xz" "$PKG" --use-compress-program='xz -T0 -9'
-
           sha256sum "${PKG}.tar.xz" | tee "${PKG}.tar.xz.sha256"
-          echo ""
-          echo "=== Package ==="
           ls -lh "${PKG}.tar.xz"
 
       - name: Upload logs on failure
@@ -306,6 +289,6 @@ jobs:
           files: artifacts/**
           body: |
             llvmbox ${{ github.ref_name }} — LLVM ${{ env.LLVM_VERSION }} for Linux x86_64
-            Statically linked against musl libc. No system dependencies.
+            Statically linked against musl libc. Zero runtime dependencies.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
