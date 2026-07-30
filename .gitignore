@@ -1,0 +1,26 @@
+# Build artifacts
+*.o
+*.a
+*.so
+*.dylib
+build/
+install/
+out/
+download/
+
+# ccache
+.ccache/
+
+# LLVM source (downloaded by CI)
+llvm-source/
+llvm.tar.gz
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
